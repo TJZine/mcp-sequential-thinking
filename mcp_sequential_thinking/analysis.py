@@ -1,9 +1,9 @@
-from typing import List, Dict, Any
 from collections import Counter
-from datetime import datetime
 import importlib.util
-from .models import ThoughtData, ThoughtStage
+from typing import Any, Dict, List
+
 from .logging_conf import configure_logging
+from .models import RiskLevel, ThoughtData, ThoughtStage
 
 logger = configure_logging("sequential-thinking.analysis")
 
@@ -12,9 +12,9 @@ class ThoughtAnalyzer:
     """Analyzer for thought data to extract insights and patterns."""
 
     @staticmethod
-    def find_related_thoughts(current_thought: ThoughtData,
-                             all_thoughts: List[ThoughtData],
-                             max_results: int = 3) -> List[ThoughtData]:
+    def find_related_thoughts(
+        current_thought: ThoughtData, all_thoughts: List[ThoughtData], max_results: int = 3
+    ) -> List[ThoughtData]:
         """Find thoughts related to the current thought.
 
         Args:
@@ -33,52 +33,36 @@ class ThoughtAnalyzer:
             if test_results:
                 return test_results
 
-        # First, find thoughts in the same stage
-        same_stage = [t for t in all_thoughts
-                     if t.stage == current_thought.stage and t.id != current_thought.id]
+        candidates = []
+        current_tags = set(current_thought.tags)
+        current_files = set(current_thought.files_touched)
+        current_dependencies = set(current_thought.dependencies)
 
-        # Then, find thoughts with similar tags
-        if current_thought.tags:
-            tag_matches = []
-            for thought in all_thoughts:
-                if thought.id == current_thought.id:
-                    continue
+        for thought in all_thoughts:
+            if thought.id == current_thought.id:
+                continue
 
-                # Count matching tags
-                matching_tags = set(current_thought.tags) & set(thought.tags)
-                if matching_tags:
-                    tag_matches.append((thought, len(matching_tags)))
+            score = 0
+            if thought.stage == current_thought.stage:
+                score += 3
 
-            # Sort by number of matching tags (descending)
-            tag_matches.sort(key=lambda x: x[1], reverse=True)
-            tag_related = [t[0] for t in tag_matches]
-        else:
-            tag_related = []
+            tag_overlap = current_tags & set(thought.tags)
+            score += len(tag_overlap)
 
-        # Combine and deduplicate results
-        combined = []
-        seen_ids = set()
+            file_overlap = current_files & set(thought.files_touched)
+            score += len(file_overlap) * 2
 
-        # First add same stage thoughts
-        for thought in same_stage:
-            if thought.id not in seen_ids:
-                combined.append(thought)
-                seen_ids.add(thought.id)
+            dependency_overlap = current_dependencies & set(thought.dependencies)
+            score += len(dependency_overlap)
 
-                if len(combined) >= max_results:
-                    break
+            if thought.risk_level == current_thought.risk_level:
+                score += 1
 
-        # Then add tag-related thoughts
-        if len(combined) < max_results:
-            for thought in tag_related:
-                if thought.id not in seen_ids:
-                    combined.append(thought)
-                    seen_ids.add(thought.id)
+            if score > 0:
+                candidates.append((score, thought))
 
-                    if len(combined) >= max_results:
-                        break
-
-        return combined
+        candidates.sort(key=lambda item: (item[0], item[1].thought_number), reverse=True)
+        return [thought for _, thought in candidates[:max_results]]
 
     @staticmethod
     def generate_summary(thoughts: List[ThoughtData]) -> Dict[str, Any]:
@@ -100,8 +84,6 @@ class ThoughtAnalyzer:
                 stages[thought.stage.value] = []
             stages[thought.stage.value].append(thought)
 
-        # Count tags - using a more readable approach with explicit steps
-        # Collect all tags from all thoughts
         all_tags = []
         for thought in thoughts:
             all_tags.extend(thought.tags)
@@ -130,11 +112,11 @@ class ThoughtAnalyzer:
             # maintainable list comprehensions
             
             # Count thoughts by stage
-            stage_counts = {
-                stage: len(thoughts_list) 
-                for stage, thoughts_list in stages.items()
+            stage_counts = {stage: len(thoughts_list) for stage, thoughts_list in stages.items()}
+            stage_counts_with_missing = {
+                stage.value: stage_counts.get(stage.value, 0) for stage in ThoughtStage
             }
-            
+
             # Create timeline entries
             sorted_thoughts = sorted(thoughts, key=lambda x: x.thought_number)
             timeline_entries = []
@@ -152,22 +134,26 @@ class ThoughtAnalyzer:
                     "count": count
                 })
             
-            # Check if all stages are represented
-            all_stages_present = all(
-                stage.value in stages 
-                for stage in ThoughtStage
-            )
-            
+            all_stages_present = all(stage_counts_with_missing[stage.value] > 0 for stage in ThoughtStage)
+
+            confidence_average = sum(t.confidence_score for t in thoughts) / len(thoughts)
+            files_touched = sorted({file for t in thoughts for file in t.files_touched})
+            dependency_map = ThoughtAnalyzer._dependency_map(thoughts)
+
             # Assemble the final summary
             summary = {
                 "totalThoughts": len(thoughts),
-                "stages": stage_counts,
+                "stages": stage_counts_with_missing,
                 "timeline": timeline_entries,
                 "topTags": top_tags_entries,
                 "completionStatus": {
                     "hasAllStages": all_stages_present,
                     "percentComplete": percent_complete
-                }
+                },
+                "confidenceAverage": confidence_average,
+                "filesTouched": files_touched,
+                "riskProfile": ThoughtAnalyzer._risk_profile(thoughts),
+                "dependencyMap": dependency_map,
             }
         except Exception as e:
             logger.error(f"Error generating summary: {e}")
@@ -189,7 +175,6 @@ class ThoughtAnalyzer:
         Returns:
             Dict[str, Any]: Analysis results
         """
-        # Check if we're running in a test environment
         if importlib.util.find_spec("pytest") is not None:
             # Import test utilities only when needed to avoid circular imports
             from .testing import TestHelpers
@@ -219,8 +204,34 @@ class ThoughtAnalyzer:
             same_stage_thoughts = [t for t in all_thoughts if t.stage == thought.stage]
             is_first_in_stage = len(same_stage_thoughts) <= 1
 
-        # Calculate progress
         progress = (thought.thought_number / thought.total_thoughts) * 100
+
+        stage_coverage = ThoughtAnalyzer._stage_coverage(all_thoughts)
+        pending_stages = [stage.value for stage, count in stage_coverage.items() if count == 0]
+        metadata_alerts = ThoughtAnalyzer._metadata_alerts(thought)
+        dependency_summary = ThoughtAnalyzer._dependency_summary(all_thoughts)
+        testing_ready = ThoughtAnalyzer._has_testing_after_implementation(all_thoughts)
+
+        # Simple guidance heuristic to indicate whether driving more thoughts is useful
+        recommended_next = True
+        guidance_reason = "Continue to next step."
+        try:
+            # Stop if we've reached or exceeded the planned count
+            if thought.thought_number >= thought.total_thoughts:
+                recommended_next = False
+                guidance_reason = "Reached total planned thoughts."
+            # Stop after Review stage typically
+            elif thought.stage == ThoughtStage.REVIEW:
+                recommended_next = False
+                guidance_reason = "Review stage complete."
+            # If all stages have at least one thought and we're >80% through, suggest stopping
+            elif len(pending_stages) == 0 and progress >= 80:
+                recommended_next = False
+                guidance_reason = "Core stages covered; diminishing returns."
+        except Exception:
+            # Be defensive: never break analysis on guidance calc
+            recommended_next = True
+            guidance_reason = "Continue to next step."
 
         # Create analysis
         return {
@@ -243,11 +254,94 @@ class ThoughtAnalyzer:
                         } for t in related_thoughts
                     ],
                     "progress": progress,
-                    "isFirstInStage": is_first_in_stage
+                    "isFirstInStage": is_first_in_stage,
+                    "confidenceScore": thought.confidence_score,
+                    "metadataAlerts": metadata_alerts,
+                    "stageCoverage": stage_coverage,
+                    "pendingStages": pending_stages,
                 },
                 "context": {
                     "thoughtHistoryLength": len(all_thoughts),
-                    "currentStage": thought.stage.value
+                    "currentStage": thought.stage.value,
+                    "projectDependencies": dependency_summary,
                 }
-            }
+            },
+            "insights": {
+                "testingReady": testing_ready,
+                "highRiskPendingTests": ThoughtAnalyzer._high_risk_without_tests(all_thoughts),
+            },
+            "guidance": {
+                "recommendedNextThoughtNeeded": recommended_next,
+                "reason": guidance_reason,
+            },
         }
+
+    @staticmethod
+    def _risk_profile(thoughts: List[ThoughtData]) -> Dict[str, Any]:
+        """Summarize risk levels across the thought history."""
+        risk_counts = Counter(thought.risk_level.value for thought in thoughts)
+        return {
+            "high": risk_counts.get(RiskLevel.HIGH.value, 0),
+            "medium": risk_counts.get(RiskLevel.MEDIUM.value, 0),
+            "low": risk_counts.get(RiskLevel.LOW.value, 0),
+        }
+
+    @staticmethod
+    def _dependency_map(thoughts: List[ThoughtData]) -> Dict[str, List[int]]:
+        """Map dependencies to the thoughts that reference them."""
+        dependency_map: Dict[str, List[int]] = {}
+        for thought in thoughts:
+            for dependency in thought.dependencies:
+                dependency_map.setdefault(dependency, []).append(thought.thought_number)
+        return dependency_map
+
+    @staticmethod
+    def _metadata_alerts(thought: ThoughtData) -> List[str]:
+        """Highlight missing metadata that is helpful for Codex workflows."""
+        alerts: List[str] = []
+        if thought.stage == ThoughtStage.IMPLEMENTATION and not thought.files_touched:
+            alerts.append("Implementation thoughts should list filesTouched for traceability.")
+
+        if thought.stage in (ThoughtStage.TESTING, ThoughtStage.REVIEW) and not thought.tests_to_run:
+            alerts.append("Capture testsToRun to keep testing expectations explicit.")
+
+        if thought.risk_level == RiskLevel.HIGH and thought.confidence_score < 0.5:
+            alerts.append("High-risk thought marked with low confidence; consider another research thought.")
+
+        return alerts
+
+    @staticmethod
+    def _stage_coverage(thoughts: List[ThoughtData]) -> Dict[ThoughtStage, int]:
+        coverage: Dict[ThoughtStage, int] = {stage: 0 for stage in ThoughtStage}
+        for thought in thoughts:
+            coverage[thought.stage] += 1
+        return coverage
+
+    @staticmethod
+    def _dependency_summary(thoughts: List[ThoughtData]) -> Dict[str, Any]:
+        unique_dependencies = sorted({dep for thought in thoughts for dep in thought.dependencies})
+        return {
+            "count": len(unique_dependencies),
+            "items": unique_dependencies,
+        }
+
+    @staticmethod
+    def _has_testing_after_implementation(thoughts: List[ThoughtData]) -> bool:
+        """Check if the project has produced at least one testing-stage thought after implementation started."""
+        implementation_numbers = [
+            thought.thought_number for thought in thoughts if thought.stage == ThoughtStage.IMPLEMENTATION
+        ]
+        if not implementation_numbers:
+            return False
+        last_impl = max(implementation_numbers)
+        return any(
+            thought.stage == ThoughtStage.TESTING and thought.thought_number >= last_impl for thought in thoughts
+        )
+
+    @staticmethod
+    def _high_risk_without_tests(thoughts: List[ThoughtData]) -> int:
+        return sum(
+            1
+            for thought in thoughts
+            if thought.risk_level == RiskLevel.HIGH and not thought.tests_to_run
+        )

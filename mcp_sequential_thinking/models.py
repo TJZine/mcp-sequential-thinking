@@ -1,21 +1,24 @@
-from typing import List, Optional, Dict, Any
 from enum import Enum
+from typing import Any, Dict, List
 from datetime import datetime
 from uuid import uuid4, UUID
 from pydantic import BaseModel, Field, field_validator
 
 
 class ThoughtStage(Enum):
-    """Basic thinking stages for structured sequential thinking."""
-    PROBLEM_DEFINITION = "Problem Definition"
-    RESEARCH = "Research"
-    ANALYSIS = "Analysis"
-    SYNTHESIS = "Synthesis"
-    CONCLUSION = "Conclusion"
+    """Coding-aware thinking stages for structured sequential thinking."""
+
+    SCOPING = "Scoping"
+    RESEARCH_SPIKE = "Research & Spike"
+    IMPLEMENTATION = "Implementation"
+    TESTING = "Testing"
+    REVIEW = "Review"
 
     @classmethod
     def from_string(cls, value: str) -> 'ThoughtStage':
         """Convert a string to a thinking stage.
+
+        Accepts common aliases used by tools (e.g., "Planning").
 
         Args:
             value: The string representation of the thinking stage
@@ -26,9 +29,38 @@ class ThoughtStage(Enum):
         Raises:
             ValueError: If the string does not match any valid thinking stage
         """
-        # Case-insensitive comparison
+        if not value:
+            # Default to Implementation when unspecified
+            return ThoughtStage.IMPLEMENTATION
+
+        normalized = value.strip().lower()
+
+        # Direct exact match against canonical values
         for stage in cls:
-            if stage.value.casefold() == value.casefold():
+            if stage.value.casefold() == normalized:
+                return stage
+
+        # Synonym map to smooth integration with Serena/Codex naming
+        synonyms = {
+            ThoughtStage.SCOPING: {
+                "scoping", "scope", "requirements", "planning (scope)", "project scoping",
+            },
+            ThoughtStage.RESEARCH_SPIKE: {
+                "research & spike", "research", "spike", "spike/research", "investigate", "r&d",
+            },
+            ThoughtStage.IMPLEMENTATION: {
+                "implementation", "implement", "build", "coding", "develop", "development", "plan", "planning",
+            },
+            ThoughtStage.TESTING: {
+                "testing", "test", "qa", "validate", "verification",
+            },
+            ThoughtStage.REVIEW: {
+                "review", "code review", "finalize", "ship", "pr review",
+            },
+        }
+
+        for stage, names in synonyms.items():
+            if normalized in names:
                 return stage
 
         # If no match found
@@ -36,8 +68,17 @@ class ThoughtStage(Enum):
         raise ValueError(f"Invalid thinking stage: '{value}'. Valid stages are: {valid_stages}")
 
 
+class RiskLevel(str, Enum):
+    """Relative risk of a given thought."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
 class ThoughtData(BaseModel):
     """Data structure for a single thought in the sequential thinking process."""
+
     thought: str
     thought_number: int
     total_thoughts: int
@@ -46,6 +87,11 @@ class ThoughtData(BaseModel):
     tags: List[str] = Field(default_factory=list)
     axioms_used: List[str] = Field(default_factory=list)
     assumptions_challenged: List[str] = Field(default_factory=list)
+    files_touched: List[str] = Field(default_factory=list)
+    tests_to_run: List[str] = Field(default_factory=list)
+    risk_level: RiskLevel = RiskLevel.MEDIUM
+    dependencies: List[str] = Field(default_factory=list)
+    confidence_score: float = 0.5
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
     id: UUID = Field(default_factory=uuid4)
 
@@ -81,6 +127,13 @@ class ThoughtData(BaseModel):
             raise ValueError("Total thoughts must be greater or equal to current thought number")
         return v
 
+    @field_validator("confidence_score")
+    def confidence_in_range(cls, value: float) -> float:
+        """Validate the confidence score."""
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("Confidence score must be between 0.0 and 1.0")
+        return value
+
     def validate(self) -> bool:
         """Legacy validation method for backward compatibility.
 
@@ -103,31 +156,29 @@ class ThoughtData(BaseModel):
         Returns:
             dict: Dictionary representation of the thought data
         """
-        from .utils import to_camel_case
-
         # Get all model fields, excluding internal properties
         data = self.model_dump()
-        
+
         # Handle special conversions
         data["stage"] = self.stage.value
-        
+        data["risk_level"] = self.risk_level.value
+
         if not include_id:
             # Remove ID for external representations
             data.pop("id", None)
         else:
             # Convert ID to string for JSON serialization
             data["id"] = str(data["id"])
-        
+
         # Convert snake_case keys to camelCase for API consistency
         result = {}
         for key, value in data.items():
             if key == "stage":
-                # Stage is already handled above
                 continue
-                
-            camel_key = to_camel_case(key)
+
+            camel_key = self._to_camel_case(key)
             result[camel_key] = value
-        
+
         # Ensure these fields are always present with camelCase naming
         result["thought"] = self.thought
         result["thoughtNumber"] = self.thought_number
@@ -137,8 +188,13 @@ class ThoughtData(BaseModel):
         result["tags"] = self.tags
         result["axiomsUsed"] = self.axioms_used
         result["assumptionsChallenged"] = self.assumptions_challenged
+        result["filesTouched"] = self.files_touched
+        result["testsToRun"] = self.tests_to_run
+        result["riskLevel"] = self.risk_level.value
+        result["dependencies"] = self.dependencies
+        result["confidenceScore"] = self.confidence_score
         result["timestamp"] = self.timestamp
-        
+
         return result
 
     @classmethod
@@ -151,16 +207,18 @@ class ThoughtData(BaseModel):
         Returns:
             ThoughtData: A new ThoughtData instance
         """
-        from .utils import to_snake_case
-        
-        # Convert any camelCase keys to snake_case
         snake_data = {}
         mappings = {
             "thoughtNumber": "thought_number",
             "totalThoughts": "total_thoughts",
             "nextThoughtNeeded": "next_thought_needed",
             "axiomsUsed": "axioms_used",
-            "assumptionsChallenged": "assumptions_challenged"
+            "assumptionsChallenged": "assumptions_challenged",
+            "filesTouched": "files_touched",
+            "testsToRun": "tests_to_run",
+            "riskLevel": "risk_level",
+            "dependencies": "dependencies",
+            "confidenceScore": "confidence_score",
         }
         
         # Process known direct mappings
@@ -173,14 +231,21 @@ class ThoughtData(BaseModel):
             if key in data:
                 snake_data[key] = data[key]
                 
-        # Handle special fields
         if "stage" in data:
             snake_data["stage"] = ThoughtStage.from_string(data["stage"])
-            
+
+        if "risk_level" in snake_data and isinstance(snake_data["risk_level"], str):
+            snake_data["risk_level"] = RiskLevel(snake_data["risk_level"].lower())
+
         # Set default values for missing fields
         snake_data.setdefault("tags", [])
         snake_data.setdefault("axioms_used", data.get("axiomsUsed", []))
         snake_data.setdefault("assumptions_challenged", data.get("assumptionsChallenged", []))
+        snake_data.setdefault("files_touched", data.get("filesTouched", []))
+        snake_data.setdefault("tests_to_run", data.get("testsToRun", []))
+        snake_data.setdefault("risk_level", snake_data.get("risk_level", RiskLevel.MEDIUM))
+        snake_data.setdefault("dependencies", data.get("dependencies", []))
+        snake_data.setdefault("confidence_score", data.get("confidenceScore", 0.5))
         snake_data.setdefault("timestamp", datetime.now().isoformat())
 
         # Add ID if present, otherwise generate a new one
@@ -195,3 +260,11 @@ class ThoughtData(BaseModel):
     model_config = {
         "arbitrary_types_allowed": True
     }
+
+    @staticmethod
+    def _to_camel_case(value: str) -> str:
+        """Convert snake_case strings to camelCase."""
+        components = value.split("_")
+        if not components:
+            return value
+        return components[0] + "".join(component.title() for component in components[1:])

@@ -12,7 +12,7 @@ A Model Context Protocol (MCP) server that facilitates structured, progressive t
 
 ## Features
 
-- **Structured Thinking Framework**: Organizes thoughts through standard cognitive stages (Problem Definition, Research, Analysis, Synthesis, Conclusion)
+- **Structured Thinking Framework**: Organizes thoughts through coding-aware stages (Scoping, Research & Spike, Implementation, Testing, Review)
 - **Thought Tracking**: Records and manages sequential thoughts with metadata
 - **Related Thought Analysis**: Identifies connections between similar thoughts
 - **Progress Monitoring**: Tracks your position in the overall thinking sequence
@@ -22,6 +22,8 @@ A Model Context Protocol (MCP) server that facilitates structured, progressive t
 - **Extensible Architecture**: Easily customize and extend functionality
 - **Robust Error Handling**: Graceful handling of edge cases and corrupted data
 - **Type Safety**: Comprehensive type annotations and validation
+- **Stage-Specific Prompts**: Built-in FastMCP prompts for scoping, research, implementation, testing, and review guardrails
+- **Project-Aware Sessions**: Scope histories per repository or initiative using `project_id`
 
 ## Prerequisites
 
@@ -171,14 +173,20 @@ Records and analyzes a new thought in your sequential thinking process.
 - `total_thoughts` (integer): Expected total thoughts in the sequence
 - `next_thought_needed` (boolean): Whether more thoughts are needed after this one
 - `stage` (string): The thinking stage - must be one of:
-  - "Problem Definition"
-  - "Research"
-  - "Analysis"
-  - "Synthesis"
-  - "Conclusion"
+  - "Scoping"
+  - "Research & Spike"
+  - "Implementation"
+  - "Testing"
+  - "Review"
 - `tags` (list of strings, optional): Keywords or categories for your thought
 - `axioms_used` (list of strings, optional): Principles or axioms applied in your thought
 - `assumptions_challenged` (list of strings, optional): Assumptions your thought questions or challenges
+- `files_touched` (list of strings, optional): Repository paths referenced in this thought
+- `tests_to_run` (list of strings, optional): Targeted tests Codex should run after this step
+- `dependencies` (list of strings, optional): External systems, teams, or documents this thought relies on
+- `risk_level` (string, optional): "low", "medium", or "high"; defaults to "medium"
+- `confidence_score` (float, optional): Between 0.0 and 1.0, defaults to 0.5
+- `project_id` (string, optional): Session scope identifier (e.g., repo name or ticket)
 
 **Example:**
 
@@ -189,12 +197,29 @@ process_thought(
     thought_number=1,
     total_thoughts=5,
     next_thought_needed=True,
-    stage="Problem Definition",
+    stage="Scoping",
     tags=["climate", "global policy", "systems thinking"],
     axioms_used=["Complex problems require multifaceted solutions"],
-    assumptions_challenged=["Technology alone can solve climate change"]
+    assumptions_challenged=["Technology alone can solve climate change"],
+    files_touched=["docs/climate.md"],
+    tests_to_run=["pytest tests/test_climate.py"],
+    dependencies=["epa-api"],
+    risk_level="high",
+    confidence_score=0.7,
+    project_id="climate-mission"
 )
 ```
+
+## Serena/Codex Integration Notes
+
+- Stage aliases: the `stage` parameter now accepts common synonyms used by Serena/Codex, e.g. `Planning` maps to `Implementation`; `Scope/Scoping`, `Research/Spike`, `Testing/Test`, and `Review/Code Review` are all supported. If `stage` is omitted, it defaults to `Implementation`.
+- Stringified inputs: some tool bridges send everything as strings. The server now coerces types for:
+  - `thought_number`, `total_thoughts`: numeric strings are parsed as integers
+  - `next_thought_needed`: accepts `true/false/1/0/yes/no`
+  - list fields (`tags`, `axioms_used`, `assumptions_challenged`, `files_touched`, `tests_to_run`, `dependencies`): accepts JSON-encoded lists or comma/semicolon-separated strings
+  - `confidence_score`: parses numeric strings
+- Legacy kwargs: if your bridge requires a `legacy_kwargs` parameter, you can pass a JSON object as a string (e.g., `{"nextThoughtNeeded": true}`) and the server will merge it with other args and camelCase aliases. Unknown extra keyword arguments are also treated as legacy/camelCase payload.
+- Recommendation: if Serena “planning mode” is not yet compatible with your Codex context, drive plan updates from sequential-thinking outputs instead. For example, use `generate_summary` as the basis for `update_plan` calls, or map Implementation-stage thoughts to `plan` steps with `status` transitions managed by Codex.
 
 ### 2. `generate_summary`
 
@@ -207,18 +232,18 @@ Generates a summary of your entire thinking process.
   "summary": {
     "totalThoughts": 5,
     "stages": {
-      "Problem Definition": 1,
-      "Research": 1,
-      "Analysis": 1,
-      "Synthesis": 1,
-      "Conclusion": 1
+      "Scoping": 1,
+      "Research & Spike": 1,
+      "Implementation": 1,
+      "Testing": 1,
+      "Review": 1
     },
     "timeline": [
-      {"number": 1, "stage": "Problem Definition"},
-      {"number": 2, "stage": "Research"},
-      {"number": 3, "stage": "Analysis"},
-      {"number": 4, "stage": "Synthesis"},
-      {"number": 5, "stage": "Conclusion"}
+      {"number": 1, "stage": "Scoping"},
+      {"number": 2, "stage": "Research & Spike"},
+      {"number": 3, "stage": "Implementation"},
+      {"number": 4, "stage": "Testing"},
+      {"number": 5, "stage": "Review"}
     ]
   }
 }
@@ -236,6 +261,17 @@ Resets the thinking process by clearing all recorded thoughts.
 - **Writing Organization**: Develop ideas progressively before writing
 - **Project Analysis**: Evaluate projects through defined analytical stages
 
+## Stage-Aware Prompts
+
+The server now exposes FastMCP prompts for the five default stages:
+
+- `scoping_prompt` – clarifies scope, non-goals, and success metrics.
+- `research_prompt` – plans spikes and surfaces references before coding.
+- `implementation_prompt` – sequences coding tasks, files touched, and risk mitigations.
+- `testing_prompt` – enumerates targeted test suites and regression areas.
+- `review_prompt` – gathers reviewer checklists, follow-ups, and release confidence.
+
+Use these prompts directly from your MCP client to keep each stage of the thought flow structured and repeatable.
 
 ## Getting Started
 
@@ -266,6 +302,3 @@ For detailed examples of how to customize and extend the Sequential Thinking ser
 ## License
 
 MIT License
-
-
-

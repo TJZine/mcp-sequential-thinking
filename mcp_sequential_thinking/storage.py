@@ -1,16 +1,17 @@
-import json
-import logging
 import os
+import re
 import threading
-from typing import List, Optional, Dict, Any
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional
 
-import portalocker
-
-from .models import ThoughtData, ThoughtStage
 from .logging_conf import configure_logging
-from .storage_utils import prepare_thoughts_for_serialization, save_thoughts_to_file, load_thoughts_from_file
+from .models import ThoughtData, ThoughtStage
+from .storage_utils import (
+    load_thoughts_from_file,
+    prepare_thoughts_for_serialization,
+    save_thoughts_to_file,
+)
 
 logger = configure_logging("sequential-thinking.storage")
 
@@ -18,135 +19,139 @@ logger = configure_logging("sequential-thinking.storage")
 class ThoughtStorage:
     """Storage manager for thought data."""
 
-    def __init__(self, storage_dir: Optional[str] = None):
+    def __init__(self, storage_dir: Optional[str] = None, default_project_id: Optional[str] = None):
         """Initialize the storage manager.
 
         Args:
             storage_dir: Directory to store thought data files. If None, uses a default directory.
+            default_project_id: Project identifier to scope sessions.
         """
         if storage_dir is None:
-            # Use user's home directory by default
             home_dir = Path.home()
             self.storage_dir = home_dir / ".mcp_sequential_thinking"
         else:
             self.storage_dir = Path(storage_dir)
 
-        # Create storage directory if it doesn't exist
         self.storage_dir.mkdir(parents=True, exist_ok=True)
 
-        # Default session file
-        self.current_session_file = self.storage_dir / "current_session.json"
-        self.lock_file = self.storage_dir / "current_session.lock"
-
-        # Thread safety
         self._lock = threading.RLock()
+        env_project = os.environ.get("MCP_PROJECT_ID")
+        self.default_project_id = self._sanitize_project_id(default_project_id or env_project or "default")
+        self._project_histories: Dict[str, List[ThoughtData]] = {}
         self.thought_history: List[ThoughtData] = []
 
-        # Load existing session if available
-        self._load_session()
+        self._ensure_history(self.default_project_id)
+        logger.debug("Initialized ThoughtStorage at %s (project=%s)", self.storage_dir, self.default_project_id)
 
-    def _load_session(self) -> None:
-        """Load thought history from the current session file if it exists."""
+    def set_default_project(self, project_id: str) -> None:
+        """Set the default project context for future operations."""
+        resolved = self._sanitize_project_id(project_id)
         with self._lock:
-            # Use the utility function to handle loading with proper error handling
-            self.thought_history = load_thoughts_from_file(self.current_session_file, self.lock_file)
+            self.default_project_id = resolved
+            self._ensure_history(resolved)
+            self.thought_history = self._project_histories[resolved]
+            logger.debug("Switched default project to %s", resolved)
 
-    def _save_session(self) -> None:
-        """Save the current thought history to the session file."""
-        # Use thread lock to ensure consistent data
+    def _sanitize_project_id(self, project_id: str) -> str:
+        """Convert arbitrary project identifiers into filesystem-safe names."""
+        if not project_id:
+            return "default"
+        cleaned = re.sub(r"[^a-zA-Z0-9._-]", "_", project_id.strip())
+        return cleaned or "default"
+
+    def _session_file_for(self, project_id: str) -> Path:
+        return self.storage_dir / f"{project_id}_session.json"
+
+    def _lock_file_for(self, project_id: str) -> Path:
+        return self.storage_dir / f"{project_id}_session.lock"
+
+    def _ensure_history(self, project_id: str) -> List[ThoughtData]:
+        """Load a project's thoughts into memory if needed."""
+        if project_id not in self._project_histories:
+            session_file = self._session_file_for(project_id)
+            lock_file = self._lock_file_for(project_id)
+            self._project_histories[project_id] = load_thoughts_from_file(session_file, lock_file)
+        if project_id == self.default_project_id:
+            self.thought_history = self._project_histories[project_id]
+        return self._project_histories[project_id]
+
+    def _resolve_project_id(self, project_id: Optional[str]) -> str:
+        return self._sanitize_project_id(project_id or self.default_project_id)
+
+    def _save_session(self, project_id: str) -> None:
+        """Persist a single project's history to disk."""
+        history = self._project_histories.get(project_id, [])
+        thoughts_with_ids = prepare_thoughts_for_serialization(history)
+        session_file = self._session_file_for(project_id)
+        lock_file = self._lock_file_for(project_id)
+        save_thoughts_to_file(session_file, thoughts_with_ids, lock_file)
+        logger.debug("Saved %s thoughts for project %s", len(history), project_id)
+
+    def add_thought(self, thought: ThoughtData, project_id: Optional[str] = None) -> None:
+        """Add a thought to the history for the requested project."""
         with self._lock:
-            # Use utility functions to prepare and save thoughts
-            thoughts_with_ids = prepare_thoughts_for_serialization(self.thought_history)
-        
-        # Save to file with proper locking
-        save_thoughts_to_file(self.current_session_file, thoughts_with_ids, self.lock_file)
+            pid = self._resolve_project_id(project_id)
+            history = self._ensure_history(pid)
+            history.append(thought)
+            if pid == self.default_project_id:
+                self.thought_history = history
+            self._save_session(pid)
 
-    def add_thought(self, thought: ThoughtData) -> None:
-        """Add a thought to the history and save the session.
-
-        Args:
-            thought: The thought data to add
-        """
+    def get_all_thoughts(self, project_id: Optional[str] = None) -> List[ThoughtData]:
+        """Get all thoughts for the requested project."""
         with self._lock:
-            self.thought_history.append(thought)
-        self._save_session()
+            pid = self._resolve_project_id(project_id)
+            history = list(self._ensure_history(pid))
+        return history
 
-    def get_all_thoughts(self) -> List[ThoughtData]:
-        """Get all thoughts in the current session.
-
-        Returns:
-            List[ThoughtData]: All thoughts in the current session
-        """
+    def get_thoughts_by_stage(self, stage: ThoughtStage, project_id: Optional[str] = None) -> List[ThoughtData]:
+        """Get all thoughts in a specific stage."""
         with self._lock:
-            # Return a copy to avoid external modification
-            return list(self.thought_history)
+            pid = self._resolve_project_id(project_id)
+            history = self._ensure_history(pid)
+            return [t for t in history if t.stage == stage]
 
-    def get_thoughts_by_stage(self, stage: ThoughtStage) -> List[ThoughtData]:
-        """Get all thoughts in a specific stage.
-
-        Args:
-            stage: The thinking stage to filter by
-
-        Returns:
-            List[ThoughtData]: Thoughts in the specified stage
-        """
+    def clear_history(self, project_id: Optional[str] = None) -> None:
+        """Clear the thought history for a project."""
         with self._lock:
-            return [t for t in self.thought_history if t.stage == stage]
+            pid = self._resolve_project_id(project_id)
+            history = self._ensure_history(pid)
+            history.clear()
+            if pid == self.default_project_id:
+                self.thought_history = history
+            self._save_session(pid)
 
-    def clear_history(self) -> None:
-        """Clear the thought history and save the empty session."""
+    def export_session(self, file_path: str, project_id: Optional[str] = None) -> None:
+        """Export the requested project session to a file."""
+        pid = self._resolve_project_id(project_id)
         with self._lock:
-            self.thought_history.clear()
-        self._save_session()
-
-    def export_session(self, file_path: str) -> None:
-        """Export the current session to a file.
-
-        Args:
-            file_path: Path to save the exported session
-        """
-        with self._lock:
-            # Use utility function to prepare thoughts for serialization
-            thoughts_with_ids = prepare_thoughts_for_serialization(self.thought_history)
-            
-            # Create export-specific metadata
+            history = list(self._ensure_history(pid))
+            thoughts_with_ids = prepare_thoughts_for_serialization(history)
             metadata = {
                 "exportedAt": datetime.now().isoformat(),
                 "metadata": {
-                    "totalThoughts": len(self.thought_history),
+                    "project": pid,
+                    "totalThoughts": len(history),
                     "stages": {
-                        stage.value: len([t for t in self.thought_history if t.stage == stage])
+                        stage.value: len([t for t in history if t.stage == stage])
                         for stage in ThoughtStage
-                    }
-                }
+                    },
+                },
             }
-        
-        # Convert string path to Path object for compatibility with utility
+
         file_path_obj = Path(file_path)
-        lock_file = file_path_obj.with_suffix('.lock')
-        
-        # Use utility function to save with proper locking
+        lock_file = file_path_obj.with_suffix(".lock")
         save_thoughts_to_file(file_path_obj, thoughts_with_ids, lock_file, metadata)
 
-    def import_session(self, file_path: str) -> None:
-        """Import a session from a file.
-
-        Args:
-            file_path: Path to the file to import
-
-        Raises:
-            FileNotFoundError: If the file doesn't exist
-            json.JSONDecodeError: If the file is not valid JSON
-            KeyError: If the file doesn't contain valid thought data
-        """
-        # Convert string path to Path object for compatibility with utility
+    def import_session(self, file_path: str, project_id: Optional[str] = None) -> None:
+        """Import a session into the requested project."""
         file_path_obj = Path(file_path)
-        lock_file = file_path_obj.with_suffix('.lock')
-        
-        # Use utility function to load thoughts with proper error handling
+        lock_file = file_path_obj.with_suffix(".lock")
         thoughts = load_thoughts_from_file(file_path_obj, lock_file)
-        
-        with self._lock:
-            self.thought_history = thoughts
 
-        self._save_session()
+        with self._lock:
+            pid = self._resolve_project_id(project_id)
+            self._project_histories[pid] = thoughts
+            if pid == self.default_project_id:
+                self.thought_history = thoughts
+            self._save_session(pid)

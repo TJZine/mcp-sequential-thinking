@@ -27,7 +27,7 @@ class TestThoughtStorage(unittest.TestCase):
             thought_number=1,
             total_thoughts=3,
             next_thought_needed=True,
-            stage=ThoughtStage.PROBLEM_DEFINITION
+            stage=ThoughtStage.SCOPING
         )
         
         self.storage.add_thought(thought)
@@ -37,7 +37,7 @@ class TestThoughtStorage(unittest.TestCase):
         self.assertEqual(self.storage.thought_history[0], thought)
         
         # Check that the session file was created
-        session_file = Path(self.temp_dir.name) / "current_session.json"
+        session_file = Path(self.temp_dir.name) / "default_session.json"
         self.assertTrue(session_file.exists())
         
         # Check the content of the session file
@@ -53,7 +53,7 @@ class TestThoughtStorage(unittest.TestCase):
             thought_number=1,
             total_thoughts=3,
             next_thought_needed=True,
-            stage=ThoughtStage.PROBLEM_DEFINITION
+            stage=ThoughtStage.SCOPING
         )
         
         thought2 = ThoughtData(
@@ -61,7 +61,7 @@ class TestThoughtStorage(unittest.TestCase):
             thought_number=2,
             total_thoughts=3,
             next_thought_needed=True,
-            stage=ThoughtStage.RESEARCH
+            stage=ThoughtStage.RESEARCH_SPIKE
         )
         
         self.storage.add_thought(thought1)
@@ -80,7 +80,7 @@ class TestThoughtStorage(unittest.TestCase):
             thought_number=1,
             total_thoughts=3,
             next_thought_needed=True,
-            stage=ThoughtStage.PROBLEM_DEFINITION
+            stage=ThoughtStage.SCOPING
         )
         
         thought2 = ThoughtData(
@@ -88,7 +88,7 @@ class TestThoughtStorage(unittest.TestCase):
             thought_number=2,
             total_thoughts=3,
             next_thought_needed=True,
-            stage=ThoughtStage.RESEARCH
+            stage=ThoughtStage.RESEARCH_SPIKE
         )
         
         thought3 = ThoughtData(
@@ -96,15 +96,15 @@ class TestThoughtStorage(unittest.TestCase):
             thought_number=3,
             total_thoughts=3,
             next_thought_needed=False,
-            stage=ThoughtStage.PROBLEM_DEFINITION
+            stage=ThoughtStage.SCOPING
         )
         
         self.storage.add_thought(thought1)
         self.storage.add_thought(thought2)
         self.storage.add_thought(thought3)
         
-        problem_def_thoughts = self.storage.get_thoughts_by_stage(ThoughtStage.PROBLEM_DEFINITION)
-        research_thoughts = self.storage.get_thoughts_by_stage(ThoughtStage.RESEARCH)
+        problem_def_thoughts = self.storage.get_thoughts_by_stage(ThoughtStage.SCOPING)
+        research_thoughts = self.storage.get_thoughts_by_stage(ThoughtStage.RESEARCH_SPIKE)
         
         self.assertEqual(len(problem_def_thoughts), 2)
         self.assertEqual(problem_def_thoughts[0], thought1)
@@ -120,7 +120,7 @@ class TestThoughtStorage(unittest.TestCase):
             thought_number=1,
             total_thoughts=3,
             next_thought_needed=True,
-            stage=ThoughtStage.PROBLEM_DEFINITION
+            stage=ThoughtStage.SCOPING
         )
         
         self.storage.add_thought(thought)
@@ -130,7 +130,7 @@ class TestThoughtStorage(unittest.TestCase):
         self.assertEqual(len(self.storage.thought_history), 0)
         
         # Check that the session file was updated
-        session_file = Path(self.temp_dir.name) / "current_session.json"
+        session_file = Path(self.temp_dir.name) / "default_session.json"
         with open(session_file, 'r') as f:
             data = json.load(f)
             self.assertEqual(len(data["thoughts"]), 0)
@@ -142,7 +142,7 @@ class TestThoughtStorage(unittest.TestCase):
             thought_number=1,
             total_thoughts=2,
             next_thought_needed=True,
-            stage=ThoughtStage.PROBLEM_DEFINITION
+            stage=ThoughtStage.SCOPING
         )
         
         thought2 = ThoughtData(
@@ -150,7 +150,7 @@ class TestThoughtStorage(unittest.TestCase):
             thought_number=2,
             total_thoughts=2,
             next_thought_needed=False,
-            stage=ThoughtStage.CONCLUSION
+            stage=ThoughtStage.REVIEW
         )
         
         self.storage.add_thought(thought1)
@@ -171,6 +171,35 @@ class TestThoughtStorage(unittest.TestCase):
         self.assertEqual(len(self.storage.thought_history), 2)
         self.assertEqual(self.storage.thought_history[0].thought, "Test thought 1")
         self.assertEqual(self.storage.thought_history[1].thought, "Test thought 2")
+
+    def test_project_isolation(self):
+        """Thoughts scoped to different projects should persist in separate files."""
+        project_a = "project-a"
+        project_b = "project-b"
+        thought_a = ThoughtData(
+            thought="Project A thought",
+            thought_number=1,
+            total_thoughts=1,
+            next_thought_needed=False,
+            stage=ThoughtStage.TESTING
+        )
+        thought_b = ThoughtData(
+            thought="Project B thought",
+            thought_number=1,
+            total_thoughts=1,
+            next_thought_needed=False,
+            stage=ThoughtStage.REVIEW
+        )
+
+        self.storage.add_thought(thought_a, project_id=project_a)
+        self.storage.add_thought(thought_b, project_id=project_b)
+
+        thoughts_a = self.storage.get_all_thoughts(project_id=project_a)
+        thoughts_b = self.storage.get_all_thoughts(project_id=project_b)
+
+        self.assertEqual(len(thoughts_a), 1)
+        self.assertEqual(len(thoughts_b), 1)
+        self.assertNotEqual(thoughts_a[0].thought, thoughts_b[0].thought)
 
 
 if __name__ == "__main__":

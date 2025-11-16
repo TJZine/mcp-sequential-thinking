@@ -50,6 +50,8 @@ class EnhancedThoughtData(ThoughtData):
         return value
 ```
 
+> **Note:** The base server now ships with coding-oriented metadata (`files_touched`, `tests_to_run`, `dependencies`, `risk_level`, and `confidence_score`). Use subclassing like the example above when you need to capture domain-specific attributes (e.g., design doc links, reviewer IDs, experiment IDs).
+
 ## 3. Adding Persistence with a Database
 
 Implement a database-backed storage solution:
@@ -160,36 +162,36 @@ Add custom prompts to guide the thinking process:
 from mcp.server.fastmcp.prompts import base
 
 @mcp.prompt()
-def problem_definition_prompt(problem_statement: str) -> list[base.Message]:
-    """Create a prompt for the Problem Definition stage."""
+def scoping_prompt(problem_statement: str) -> list[base.Message]:
+    """Create a prompt for the Scoping stage."""
     return [
         base.SystemMessage(
-            "You are a structured thinking assistant helping to define a problem clearly."
+            "You are a structured thinking assistant helping to define scope, non-goals, and success metrics."
         ),
         base.UserMessage(f"I need to define this problem: {problem_statement}"),
         base.UserMessage(
-            "Please help me create a clear problem definition by addressing:\n"
-            "1. What is the core issue?\n"
-            "2. Who is affected?\n"
-            "3. What are the boundaries of the problem?\n"
-            "4. What would a solution look like?\n"
-            "5. What constraints exist?"
+            "Please help me clarify scope by addressing:\n"
+            "1. Desired outcomes and non-goals\n"
+            "2. High-level risks or unknowns\n"
+            "3. Exit criteria / definition of done\n"
+            "4. Constraints or dependencies\n"
+            "5. Next research or spike steps"
         )
     ]
 
 @mcp.prompt()
 def research_prompt(problem_definition: str) -> list[base.Message]:
-    """Create a prompt for the Research stage."""
+    """Create a prompt for the Research & Spike stage."""
     return [
         base.SystemMessage(
-            "You are a research assistant helping to gather information about a problem."
+            "You are a research assistant helping to gather information before implementation begins."
         ),
         base.UserMessage(f"I've defined this problem: {problem_definition}"),
         base.UserMessage(
             "Please help me research this problem by:\n"
-            "1. Identifying key information needed\n"
-            "2. Suggesting reliable sources\n"
-            "3. Outlining research questions\n"
+            "1. Identifying key code paths or docs to inspect\n"
+            "2. Suggesting small spike experiments\n"
+            "3. Outlining open questions and risks\n"
             "4. Proposing a research plan"
         )
     ]

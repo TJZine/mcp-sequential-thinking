@@ -1,5 +1,5 @@
 import unittest
-from mcp_sequential_thinking.models import ThoughtStage, ThoughtData
+from mcp_sequential_thinking.models import RiskLevel, ThoughtData, ThoughtStage
 from mcp_sequential_thinking.analysis import ThoughtAnalyzer
 
 
@@ -13,35 +13,41 @@ class TestThoughtAnalyzer(unittest.TestCase):
             thought_number=1,
             total_thoughts=5,
             next_thought_needed=True,
-            stage=ThoughtStage.PROBLEM_DEFINITION,
-            tags=["climate", "global"]
+            stage=ThoughtStage.SCOPING,
+            tags=["climate", "global"],
+            files_touched=["README.md"],
         )
-        
+
         self.thought2 = ThoughtData(
             thought="Research on emissions data",
             thought_number=2,
             total_thoughts=5,
             next_thought_needed=True,
-            stage=ThoughtStage.RESEARCH,
-            tags=["climate", "data", "emissions"]
+            stage=ThoughtStage.RESEARCH_SPIKE,
+            tags=["climate", "data", "emissions"],
+            dependencies=["epa-api"],
         )
-        
+
         self.thought3 = ThoughtData(
-            thought="Analysis of policy impacts",
+            thought="Implementation of policy impacts",
             thought_number=3,
             total_thoughts=5,
             next_thought_needed=True,
-            stage=ThoughtStage.ANALYSIS,
-            tags=["policy", "impact"]
+            stage=ThoughtStage.IMPLEMENTATION,
+            tags=["policy", "impact"],
+            files_touched=["policy.py"],
+            tests_to_run=["pytest tests/test_policy.py"],
+            risk_level=RiskLevel.HIGH,
         )
-        
+
         self.thought4 = ThoughtData(
-            thought="Another problem definition thought",
+            thought="Another scoping thought",
             thought_number=4,
             total_thoughts=5,
             next_thought_needed=True,
-            stage=ThoughtStage.PROBLEM_DEFINITION,
-            tags=["problem", "definition"]
+            stage=ThoughtStage.SCOPING,
+            tags=["problem", "definition"],
+            dependencies=["stakeholder-alignment"],
         )
         
         self.all_thoughts = [self.thought1, self.thought2, self.thought3, self.thought4]
@@ -62,8 +68,9 @@ class TestThoughtAnalyzer(unittest.TestCase):
             thought_number=5,
             total_thoughts=5,
             next_thought_needed=False,
-            stage=ThoughtStage.SYNTHESIS,
-            tags=["climate", "synthesis"]
+            stage=ThoughtStage.REVIEW,
+            tags=["climate", "synthesis"],
+            dependencies=["epa-api"],
         )
         
         all_thoughts = self.all_thoughts + [new_thought]
@@ -86,23 +93,25 @@ class TestThoughtAnalyzer(unittest.TestCase):
         summary = ThoughtAnalyzer.generate_summary(self.all_thoughts)
         
         self.assertEqual(summary["summary"]["totalThoughts"], 4)
-        self.assertEqual(summary["summary"]["stages"]["Problem Definition"], 2)
-        self.assertEqual(summary["summary"]["stages"]["Research"], 1)
-        self.assertEqual(summary["summary"]["stages"]["Analysis"], 1)
+        self.assertEqual(summary["summary"]["stages"]["Scoping"], 2)
+        self.assertEqual(summary["summary"]["stages"]["Research & Spike"], 1)
+        self.assertEqual(summary["summary"]["stages"]["Implementation"], 1)
         self.assertEqual(len(summary["summary"]["timeline"]), 4)
-        self.assertTrue("topTags" in summary["summary"])
-        self.assertTrue("completionStatus" in summary["summary"])
+        self.assertIn("topTags", summary["summary"])
+        self.assertIn("riskProfile", summary["summary"])
     
     def test_analyze_thought(self):
         """Test analyzing a thought."""
         analysis = ThoughtAnalyzer.analyze_thought(self.thought1, self.all_thoughts)
         
         self.assertEqual(analysis["thoughtAnalysis"]["currentThought"]["thoughtNumber"], 1)
-        self.assertEqual(analysis["thoughtAnalysis"]["currentThought"]["stage"], "Problem Definition")
+        self.assertEqual(analysis["thoughtAnalysis"]["currentThought"]["stage"], "Scoping")
         self.assertEqual(analysis["thoughtAnalysis"]["analysis"]["relatedThoughtsCount"], 1)
         self.assertEqual(analysis["thoughtAnalysis"]["analysis"]["progress"], 20.0)  # 1/5 * 100
         self.assertTrue(analysis["thoughtAnalysis"]["analysis"]["isFirstInStage"])
         self.assertEqual(analysis["thoughtAnalysis"]["context"]["thoughtHistoryLength"], 4)
+        self.assertIn("stageCoverage", analysis["thoughtAnalysis"]["analysis"])
+        self.assertIn("insights", analysis)
 
 
 if __name__ == "__main__":
