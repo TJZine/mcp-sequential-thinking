@@ -18,6 +18,4 @@ $storageDir = Join-Path $env:USERPROFILE ".mcp_sequential_thinking"
 $env:MCP_PROJECT_ID = $projectId
 $env:MCP_STORAGE_DIR = $storageDir
 
-Write-Host "Starting Sequential Thinking MCP server for project $projectId using $RepoRoot"
-
 & uv --directory $RepoRoot run -m mcp_sequential_thinking.server
